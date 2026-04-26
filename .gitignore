@@ -1,2 +1,4 @@
 .DS_Store
-Thumbs.dbtodo-assistant/node_modules/
+Thumbs.db
+todo-assistant/node_modules/
+todo-assistant/dist/
