@@ -1,0 +1,128 @@
+import { Injectable } from '@nestjs/common';
+import { SlackMessage } from './slack.types';
+
+const ALL_MESSAGES: SlackMessage[] = [
+  {
+    id: 's1',
+    channel: '#project-x',
+    channelType: 'public',
+    from: '佐藤さん',
+    timestamp: '2026-04-25T14:30:00+09:00',
+    text: '@自分 PRのレビューお願いできますか？今日中だと助かります！',
+    isDirectMention: true,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's2',
+    channel: '#general',
+    channelType: 'public',
+    from: '鈴木部長',
+    timestamp: '2026-04-26T09:00:00+09:00',
+    text: '@自分 さっきメールした提案書の件、急ぎお願いします',
+    isDirectMention: true,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's3',
+    channel: '#dev-team',
+    channelType: 'public',
+    from: '山本さん',
+    timestamp: '2026-04-25T16:45:00+09:00',
+    text: '@自分 バグ修正の進捗どうですか？リリース前に確認したいです',
+    isDirectMention: true,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's4',
+    channel: '#general',
+    channelType: 'public',
+    from: 'bot',
+    timestamp: '2026-04-26T08:00:00+09:00',
+    text: '本日のランチMTGは12:30から第2会議室で行います',
+    isDirectMention: false,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's5',
+    channel: '#project-x',
+    channelType: 'public',
+    from: '自分',
+    timestamp: '2026-04-25T15:00:00+09:00',
+    text: '了解です、今日中に確認します！',
+    isDirectMention: false,
+    direction: 'sent',
+    hasCommitment: true,
+    commitmentStrength: 'strong',
+  },
+  {
+    id: 's6',
+    channel: '#client-abc',
+    channelType: 'public',
+    from: '自分',
+    timestamp: '2026-04-24T10:00:00+09:00',
+    text: '承知しました。明日の午前中に資料をお送りします。',
+    isDirectMention: false,
+    direction: 'sent',
+    hasCommitment: true,
+    commitmentStrength: 'strong',
+  },
+  {
+    id: 's7',
+    channel: '#dev-team',
+    channelType: 'public',
+    from: '自分',
+    timestamp: '2026-04-25T17:00:00+09:00',
+    text: 'バグ修正、週末までに対応します！',
+    isDirectMention: false,
+    direction: 'sent',
+    hasCommitment: true,
+    commitmentStrength: 'medium',
+  },
+  {
+    id: 's8',
+    channel: 'DM: 田中部長',
+    channelType: 'dm',
+    from: '田中部長',
+    timestamp: '2026-04-26T08:15:00+09:00',
+    text: '今日の役員会資料、午前中に送ってもらえる？よろしく',
+    isDirectMention: true,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's9',
+    channel: 'DM: 渡辺さん',
+    channelType: 'dm',
+    from: '渡辺さん',
+    timestamp: '2026-04-25T19:30:00+09:00',
+    text: '昨日の件、どうなりましたか？ご確認お願いします',
+    isDirectMention: true,
+    direction: 'received',
+    hasCommitment: false,
+  },
+  {
+    id: 's10',
+    channel: 'DM: 田中部長',
+    channelType: 'dm',
+    from: '自分',
+    timestamp: '2026-04-25T09:00:00+09:00',
+    text: '承知しました、対応します。',
+    isDirectMention: false,
+    direction: 'sent',
+    hasCommitment: true,
+    commitmentStrength: 'medium',
+  },
+];
+
+@Injectable()
+export class SlackService {
+  async fetchMessages(includePrivate: boolean): Promise<SlackMessage[]> {
+    await new Promise((r) => setTimeout(r, 200));
+    if (includePrivate) return ALL_MESSAGES;
+    return ALL_MESSAGES.filter((m) => m.channelType === 'public');
+  }
+}
