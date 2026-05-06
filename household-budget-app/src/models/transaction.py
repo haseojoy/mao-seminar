@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from typing import Optional
+import math
 
 
 class TransactionType(Enum):
@@ -95,3 +96,54 @@ class MonthlySummary:
     @property
     def label(self) -> str:
         return f"{self.year}年{self.month:02d}月"
+
+
+@dataclass
+class SavingsGoal:
+    """年間貯蓄目標の管理クラス。"""
+
+    target_amount: int          # 目標金額（円）
+    deadline: date              # 達成期限
+    stretch_amount: int = 0     # ストレッチ目標（円）
+    current_savings: int = 0    # これまでの累計貯蓄額（円）
+
+    @property
+    def remaining_months(self) -> int:
+        today = date.today()
+        months = (self.deadline.year - today.year) * 12 + (self.deadline.month - today.month)
+        # 月末締めなので当月を含める
+        return max(months + 1, 1)
+
+    @property
+    def remaining_amount(self) -> int:
+        return max(self.target_amount - self.current_savings, 0)
+
+    @property
+    def required_monthly_savings(self) -> int:
+        return math.ceil(self.remaining_amount / self.remaining_months)
+
+    @property
+    def stretch_remaining_amount(self) -> int:
+        if not self.stretch_amount:
+            return 0
+        return max(self.stretch_amount - self.current_savings, 0)
+
+    @property
+    def stretch_required_monthly(self) -> int:
+        if not self.stretch_amount:
+            return 0
+        return math.ceil(self.stretch_remaining_amount / self.remaining_months)
+
+    @property
+    def progress_rate(self) -> float:
+        if not self.target_amount:
+            return 0.0
+        return min(self.current_savings / self.target_amount, 1.0)
+
+    def on_track(self, this_month_savings: int) -> bool:
+        """今月の貯蓄額が目標達成ペースを満たしているか。"""
+        return this_month_savings >= self.required_monthly_savings
+
+    def forecast(self, monthly_savings: int) -> int:
+        """現在の月次貯蓄ペースで年末に到達できる金額を推計。"""
+        return self.current_savings + monthly_savings * self.remaining_months

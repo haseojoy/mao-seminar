@@ -26,7 +26,7 @@ from src.api.credit_card import CreditCardClient
 from src.api.risona import RisonaClient
 from src.analysis.analyzer import ExpenseAnalyzer
 from src.excel.writer import ExcelReportWriter
-from src.models.transaction import Category, MonthlySummary, Transaction, TransactionType
+from src.models.transaction import Category, MonthlySummary, SavingsGoal, Transaction, TransactionType
 
 
 load_dotenv()
@@ -117,6 +117,20 @@ def build_monthly_summary(
     )
 
 
+def build_goal(cumulative_savings: int = 0) -> SavingsGoal:
+    """環境変数または引数から貯蓄目標を構築する。"""
+    target = int(os.getenv("GOAL_TARGET", "1000000"))
+    stretch = int(os.getenv("GOAL_STRETCH", "1500000"))
+    deadline_str = os.getenv("GOAL_DEADLINE", "2026-12-31")
+    deadline = date.fromisoformat(deadline_str)
+    return SavingsGoal(
+        target_amount=target,
+        deadline=deadline,
+        stretch_amount=stretch,
+        current_savings=cumulative_savings,
+    )
+
+
 def run_monthly_report(year: int, month: int, mock: bool = False) -> None:
     print(f"\n{'='*50}")
     print(f"  家計管理レポート生成: {year}年{month:02d}月")
@@ -132,6 +146,13 @@ def run_monthly_report(year: int, month: int, mock: bool = False) -> None:
     summary = build_monthly_summary(year, month, transactions)
     print(f"      → 収入: {summary.total_income:,}円 / 支出: {summary.total_expense:,}円 / 差額: {summary.net:,}円")
 
+    # 貯蓄目標 (累計貯蓄は CURRENT_SAVINGS 環境変数で管理)
+    cumulative = int(os.getenv("CURRENT_SAVINGS", "0"))
+    goal = build_goal(cumulative_savings=cumulative)
+    on_track = goal.on_track(summary.net)
+    print(f"      → 目標進捗: 月次貯蓄 {summary.net:,}円 / 必要 {goal.required_monthly_savings:,}円 "
+          f"({'✅ ペース達成' if on_track else '⚠️ ペース不足'})")
+
     # 3. AI 分析
     print("[3/4] AI 支出分析を実行中...")
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -140,14 +161,14 @@ def run_monthly_report(year: int, month: int, mock: bool = False) -> None:
         print("      [WARN] ANTHROPIC_API_KEY 未設定。AI 分析をスキップします。")
     else:
         analyzer = ExpenseAnalyzer(api_key=api_key)
-        analysis_text = analyzer.analyze(summary)
+        analysis_text = analyzer.analyze(summary, goal=goal)
         print("      → 分析完了")
 
     # 4. Excel 出力
     print("[4/4] Excel レポートを生成中...")
     output_dir = os.getenv("OUTPUT_DIR", "output")
     writer = ExcelReportWriter(output_dir=output_dir)
-    filepath = writer.write(summary, analysis_text=analysis_text)
+    filepath = writer.write(summary, analysis_text=analysis_text, goal=goal)
     print(f"      → 保存先: {filepath}")
 
     print("\n完了しました。")

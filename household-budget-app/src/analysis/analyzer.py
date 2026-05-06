@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import anthropic
 
-from src.models.transaction import MonthlySummary
+from src.models.transaction import MonthlySummary, SavingsGoal
 
 
 class ExpenseAnalyzer:
@@ -17,9 +17,9 @@ class ExpenseAnalyzer:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
-    def analyze(self, summary: MonthlySummary) -> str:
+    def analyze(self, summary: MonthlySummary, goal: SavingsGoal | None = None) -> str:
         """月次サマリーを分析し、日本語のフィードバックテキストを返す。"""
-        prompt = self._build_prompt(summary)
+        prompt = self._build_prompt(summary, goal)
 
         message = self.client.messages.create(
             model=self.model,
@@ -60,7 +60,7 @@ class ExpenseAnalyzer:
     #  プロンプト構築                                                       #
     # ------------------------------------------------------------------ #
 
-    def _build_prompt(self, summary: MonthlySummary) -> str:
+    def _build_prompt(self, summary: MonthlySummary, goal: SavingsGoal | None = None) -> str:
         expense_lines = "\n".join(
             f"  - {cat}: {amount:,}円"
             for cat, amount in sorted(summary.by_category.items(), key=lambda x: -x[1])
@@ -80,26 +80,45 @@ class ExpenseAnalyzer:
             (summary.net / summary.total_income * 100) if summary.total_income > 0 else 0
         )
 
+        goal_section = ""
+        if goal:
+            on_track = goal.on_track(summary.net)
+            forecast = goal.forecast(summary.net)
+            stretch_line = (
+                f"- ストレッチ目標: {goal.stretch_amount:,}円（達成には月 {goal.stretch_required_monthly:,}円 の貯蓄が必要）"
+                if goal.stretch_amount else ""
+            )
+            goal_section = f"""
+## 年間貯蓄目標
+- 目標金額: {goal.target_amount:,}円（{goal.deadline.strftime('%Y年%m月末')}まで）
+{stretch_line}
+- 現在の累計貯蓄: {goal.current_savings:,}円（達成率: {goal.progress_rate:.1%}）
+- 残り期間: {goal.remaining_months}ヶ月
+- 目標達成に必要な月次貯蓄: {goal.required_monthly_savings:,}円
+- 今月の貯蓄額: {summary.net:,}円 → {'✅ 目標ペース達成' if on_track else '⚠️ 目標ペース未達'}
+- 現在のペースで年末予測: {forecast:,}円（目標{'達成' if forecast >= goal.target_amount else '未達'}）
+"""
+
         return f"""
 {summary.label}の家計データを分析してください。
 
 ## 収支概要
 - 収入合計: {summary.total_income:,}円
 - 支出合計: {summary.total_expense:,}円
-- 収支差額: {summary.net:,}円（貯蓄率: {saving_rate:.1f}%）
+- 収支差額（今月の貯蓄）: {summary.net:,}円（貯蓄率: {saving_rate:.1f}%）
 
 ## カテゴリ別支出
 {expense_lines}
 
 ## 高額支出 TOP5
 {top_lines}
-
+{goal_section}
 ## お願いする分析内容
 1. 今月の支出の総合評価（100点満点でスコアをつけてください）
 2. 支出バランスについての評価
-3. 節約できる可能性がある項目の具体的な提案
-4. 来月に向けての具体的な行動アドバイス（3つ）
-5. 総合的なコメント
+3. 節約できる可能性がある項目の具体的な提案（金額の目安も示してください）
+4. 貯蓄目標に向けた来月のアクション（3つ、具体的に）
+5. 目標達成に向けた激励メッセージ
 
 わかりやすく、箇条書きを使って回答してください。
 """.strip()

@@ -27,7 +27,7 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
-from src.models.transaction import MonthlySummary, TransactionType
+from src.models.transaction import MonthlySummary, SavingsGoal, TransactionType
 
 
 # カラーパレット
@@ -43,11 +43,16 @@ class ExcelReportWriter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def write(self, summary: MonthlySummary, analysis_text: str = "") -> str:
+    def write(
+        self,
+        summary: MonthlySummary,
+        analysis_text: str = "",
+        goal: SavingsGoal | None = None,
+    ) -> str:
         wb = Workbook()
         wb.remove(wb.active)  # デフォルトシートを削除
 
-        self._write_summary_sheet(wb, summary, analysis_text)
+        self._write_summary_sheet(wb, summary, analysis_text, goal)
         self._write_detail_sheet(wb, summary)
         self._write_category_sheet(wb, summary)
 
@@ -60,7 +65,11 @@ class ExcelReportWriter:
     # ------------------------------------------------------------------ #
 
     def _write_summary_sheet(
-        self, wb: Workbook, summary: MonthlySummary, analysis_text: str
+        self,
+        wb: Workbook,
+        summary: MonthlySummary,
+        analysis_text: str,
+        goal: SavingsGoal | None = None,
     ) -> None:
         ws = wb.create_sheet("サマリー")
         ws.sheet_view.showGridLines = False
@@ -100,19 +109,28 @@ class ExcelReportWriter:
             ws[f"B{row}"].alignment = Alignment(horizontal="right")
             ws.row_dimensions[row].height = 22
 
+        # 貯蓄目標ウィジェット
+        goal_offset = 0
+        if goal:
+            goal_offset = self._write_goal_widget(ws, goal, summary, start_row=9)
+
         # カテゴリ別支出テーブル
-        self._write_section_header(ws, "A9", "カテゴリ別支出")
-        ws["A10"] = "カテゴリ"
-        ws["B10"] = "金額"
-        ws["C10"] = "割合"
-        for cell in [ws["A10"], ws["B10"], ws["C10"]]:
+        cat_start = 9 + goal_offset
+        self._write_section_header(ws, f"A{cat_start}", "カテゴリ別支出")
+        header_row = cat_start + 1
+        ws[f"A{header_row}"] = "カテゴリ"
+        ws[f"B{header_row}"] = "金額"
+        ws[f"C{header_row}"] = "割合"
+        for col in ["A", "B", "C"]:
+            cell = ws[f"{col}{header_row}"]
             cell.font = Font(name="游ゴシック", bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="2E75B6")
             cell.alignment = Alignment(horizontal="center")
 
         expense_cats = {k: v for k, v in summary.by_category.items() if v > 0 and k != "収入"}
+        data_start = header_row + 1
         for i, (cat, amount) in enumerate(
-            sorted(expense_cats.items(), key=lambda x: -x[1]), start=11
+            sorted(expense_cats.items(), key=lambda x: -x[1]), start=data_start
         ):
             fill = PatternFill("solid", fgColor=COLOR_ALT_ROW) if i % 2 == 0 else None
             ws[f"A{i}"] = cat
@@ -127,7 +145,7 @@ class ExcelReportWriter:
             ws.row_dimensions[i].height = 18
 
         # 円グラフ (カテゴリ別支出)
-        chart_row_start = 11
+        chart_row_start = data_start
         chart_row_end = chart_row_start + len(expense_cats) - 1
         if len(expense_cats) > 0:
             pie = PieChart()
@@ -145,7 +163,7 @@ class ExcelReportWriter:
 
         # AI フィードバック
         if analysis_text:
-            feedback_row = chart_row_end + 3
+            feedback_row = max(chart_row_end + 3, data_start + len(expense_cats) + 2)
             self._write_section_header(ws, f"A{feedback_row}", "AI 支出分析・アドバイス")
             ws[f"A{feedback_row + 1}"] = analysis_text
             ws[f"A{feedback_row + 1}"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -253,6 +271,66 @@ class ExcelReportWriter:
             bar.add_data(data, titles_from_data=True)
             bar.set_categories(cats)
             ws.add_chart(bar, "D2")
+
+    # ------------------------------------------------------------------ #
+    #  貯蓄目標ウィジェット                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _write_goal_widget(
+        self,
+        ws,
+        goal: SavingsGoal,
+        summary: MonthlySummary,
+        start_row: int,
+    ) -> int:
+        """貯蓄目標セクションを描画し、使用した行数を返す。"""
+        self._write_section_header(ws, f"A{start_row}", "貯蓄目標 進捗")
+
+        on_track = goal.on_track(summary.net)
+        forecast = goal.forecast(summary.net)
+        progress_pct = goal.progress_rate
+
+        rows = [
+            ("目標金額", f"{goal.target_amount:,}円", "2E75B6"),
+            ("達成期限", goal.deadline.strftime("%Y年%m月末"), "2E75B6"),
+            ("累計貯蓄額", f"{goal.current_savings:,}円", "2E75B6"),
+            ("今月の貯蓄", f"{summary.net:,}円", COLOR_INCOME if summary.net >= 0 else COLOR_EXPENSE),
+            ("必要月次貯蓄", f"{goal.required_monthly_savings:,}円", "2E75B6"),
+            ("ペース判定", "✅ 目標ペース達成" if on_track else "⚠️ ペース不足", COLOR_INCOME if on_track else "FF8C00"),
+            ("年末予測", f"{forecast:,}円 ({'達成見込み' if forecast >= goal.target_amount else '未達見込み'})",
+             COLOR_INCOME if forecast >= goal.target_amount else COLOR_EXPENSE),
+        ]
+        if goal.stretch_amount:
+            rows.append(
+                ("ストレッチ目標", f"{goal.stretch_amount:,}円（月{goal.stretch_required_monthly:,}円必要）", "7030A0")
+            )
+
+        for i, (label, value, color) in enumerate(rows, start=start_row + 1):
+            ws[f"A{i}"] = label
+            ws[f"A{i}"].font = Font(name="游ゴシック", size=10, bold=True)
+            ws[f"A{i}"].fill = PatternFill("solid", fgColor="F2F2F2")
+            ws[f"B{i}"] = value
+            ws[f"B{i}"].font = Font(name="游ゴシック", size=10, bold=True, color=color)
+            ws.row_dimensions[i].height = 20
+
+        # プログレスバー（セルの背景色で表現）
+        bar_row = start_row + len(rows) + 2
+        ws[f"A{bar_row}"] = "達成率"
+        ws[f"A{bar_row}"].font = Font(name="游ゴシック", size=10, bold=True)
+        filled = max(int(progress_pct * 10), 0)
+        for col_idx in range(1, 11):
+            col = get_column_letter(col_idx + 1)
+            cell = ws[f"{col}{bar_row}"]
+            cell.fill = PatternFill(
+                "solid", fgColor=COLOR_INCOME if col_idx <= filled else "D9D9D9"
+            )
+            ws.column_dimensions[col].width = 4
+        pct_cell = ws[f"L{bar_row}"]
+        pct_cell.value = f"{progress_pct:.1%}"
+        pct_cell.font = Font(name="游ゴシック", size=10, bold=True, color=COLOR_INCOME)
+        ws.row_dimensions[bar_row].height = 18
+
+        return len(rows) + 4  # 使用した行数を返す
 
     # ------------------------------------------------------------------ #
     #  ユーティリティ                                                       #
