@@ -147,3 +147,56 @@ class SavingsGoal:
     def forecast(self, monthly_savings: int) -> int:
         """現在の月次貯蓄ペースで年末に到達できる金額を推計。"""
         return self.current_savings + monthly_savings * self.remaining_months
+
+
+@dataclass
+class DebtRecord:
+    """借金の1返済履歴。"""
+    date: date
+    creditor: str       # 貸主（消費者金融名、カード会社等）
+    amount: int         # 返済額（円）
+    principal: int = 0  # うち元本返済分（わかれば）
+    interest: int = 0   # うち利息分（わかれば）
+    memo: str = ""
+
+
+@dataclass
+class DebtSummary:
+    """借金全体の現状管理。"""
+    creditor: str           # 貸主
+    total_borrowed: int     # 借入総額（円）
+    remaining_balance: int  # 残債（円）
+    monthly_payment: int    # 月々の返済額（円）
+    interest_rate: float    # 年利（例: 0.18 = 18%）
+    repayment_history: list[DebtRecord] = field(default_factory=list)
+
+    @property
+    def monthly_interest(self) -> int:
+        """今月の利息概算（残債 × 月利）。"""
+        return math.ceil(self.remaining_balance * (self.interest_rate / 12))
+
+    @property
+    def monthly_principal(self) -> int:
+        """今月の元本返済概算。"""
+        return max(self.monthly_payment - self.monthly_interest, 0)
+
+    @property
+    def months_to_payoff(self) -> int | None:
+        """完済までの残り月数（定額返済の場合の概算）。"""
+        if self.monthly_payment <= self.monthly_interest:
+            return None  # 利息以下の返済では完済不可
+        r = self.interest_rate / 12
+        if r == 0:
+            return math.ceil(self.remaining_balance / self.monthly_payment)
+        import math as _m
+        n = _m.log(self.monthly_payment / (self.monthly_payment - self.remaining_balance * r)) / _m.log(1 + r)
+        return math.ceil(n)
+
+    @property
+    def payoff_date(self) -> date | None:
+        months = self.months_to_payoff
+        if months is None:
+            return None
+        today = date.today()
+        y, m = divmod(today.month - 1 + months, 12)
+        return date(today.year + y, m + 1, 1)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import anthropic
 
-from src.models.transaction import MonthlySummary, SavingsGoal
+from src.models.transaction import DebtSummary, MonthlySummary, SavingsGoal
 
 
 class ExpenseAnalyzer:
@@ -17,9 +17,14 @@ class ExpenseAnalyzer:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
-    def analyze(self, summary: MonthlySummary, goal: SavingsGoal | None = None) -> str:
+    def analyze(
+        self,
+        summary: MonthlySummary,
+        goal: SavingsGoal | None = None,
+        debts: list[DebtSummary] | None = None,
+    ) -> str:
         """月次サマリーを分析し、日本語のフィードバックテキストを返す。"""
-        prompt = self._build_prompt(summary, goal)
+        prompt = self._build_prompt(summary, goal, debts)
 
         message = self.client.messages.create(
             model=self.model,
@@ -60,7 +65,12 @@ class ExpenseAnalyzer:
     #  プロンプト構築                                                       #
     # ------------------------------------------------------------------ #
 
-    def _build_prompt(self, summary: MonthlySummary, goal: SavingsGoal | None = None) -> str:
+    def _build_prompt(
+        self,
+        summary: MonthlySummary,
+        goal: SavingsGoal | None = None,
+        debts: list[DebtSummary] | None = None,
+    ) -> str:
         expense_lines = "\n".join(
             f"  - {cat}: {amount:,}円"
             for cat, amount in sorted(summary.by_category.items(), key=lambda x: -x[1])
@@ -99,6 +109,23 @@ class ExpenseAnalyzer:
 - 現在のペースで年末予測: {forecast:,}円（目標{'達成' if forecast >= goal.target_amount else '未達'}）
 """
 
+        debt_section = ""
+        if debts:
+            total_remaining = sum(d.remaining_balance for d in debts)
+            total_monthly_payment = sum(d.monthly_payment for d in debts)
+            total_monthly_interest = sum(d.monthly_interest for d in debts)
+            debt_lines = "\n".join(
+                f"  - {d.creditor}: 残債 {d.remaining_balance:,}円 / 月返済 {d.monthly_payment:,}円"
+                f"（年利{d.interest_rate:.1%}、完済予定: {d.payoff_date.strftime('%Y年%m月') if d.payoff_date else '要確認'}）"
+                for d in debts
+            )
+            debt_section = f"""
+## 借金・負債状況
+- 負債合計残高: {total_remaining:,}円
+- 月々の返済合計: {total_monthly_payment:,}円（うち利息: {total_monthly_interest:,}円）
+{debt_lines}
+"""
+
         return f"""
 {summary.label}の家計データを分析してください。
 
@@ -112,13 +139,14 @@ class ExpenseAnalyzer:
 
 ## 高額支出 TOP5
 {top_lines}
-{goal_section}
+{goal_section}{debt_section}
 ## お願いする分析内容
 1. 今月の支出の総合評価（100点満点でスコアをつけてください）
 2. 支出バランスについての評価
 3. 節約できる可能性がある項目の具体的な提案（金額の目安も示してください）
-4. 貯蓄目標に向けた来月のアクション（3つ、具体的に）
-5. 目標達成に向けた激励メッセージ
+4. 借金がある場合: 返済と貯蓄のバランスについてのアドバイス（繰り上げ返済の優先度等）
+5. 貯蓄目標に向けた来月のアクション（3つ、具体的に）
+6. 目標達成に向けた激励メッセージ
 
 わかりやすく、箇条書きを使って回答してください。
 """.strip()
