@@ -5,3 +5,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.setup_done
+dist/
+build/
+*.spec

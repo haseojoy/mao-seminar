@@ -6,3 +6,4 @@ schedule>=1.2.0
 pandas>=2.1.0
 streamlit>=1.35.0
 plotly>=5.22.0
+pywebview>=5.0.5
