@@ -9,6 +9,11 @@ MOCK_MODE=true の場合はダミーデータを返す。
   - client_id / client_secret の取得
   - ユーザーによる OAuth 認可
 参照: https://developer.resona-gr.co.jp/
+
+== りそなネットバンキング CSV の使い方 ==
+  1. りそなダイレクトにログイン
+  2. 「入出金明細照会」→ CSV ダウンロード
+  3. RisonaClient.from_csv("ダウンロードしたファイル.csv")
 """
 
 import os
@@ -201,3 +206,107 @@ class RisonaClient:
                 )
             )
         return sorted(txns, key=lambda t: t.date)
+
+    # ------------------------------------------------------------------ #
+    #  CSV インポート（りそなネットバンキング 明細ダウンロード形式）            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def from_csv(
+        filepath: str,
+        target_year: int | None = None,
+        target_month: int | None = None,
+    ) -> list[Transaction]:
+        """
+        りそなネットバンキングからダウンロードした CSV を読み込む。
+
+        CSV 列構成（20列）:
+          0  レコード区分
+          1  年（ダウンロード日）
+          2  月（ダウンロード日）
+          3  日（ダウンロード日）
+          4  時
+          5  分
+          6  連絡先名
+          7  金融機関名
+          8  支店名
+          9  口座番号区分
+          10 口座種別
+          11 口座番号
+          12 再送表示
+          13 取引名（支払 / 入金）
+          14 取扱日付 年
+          15 取扱日付 月
+          16 取扱日付 日
+          17 金額
+          18 取引後残高
+          19 摘要
+          20 コメント（省略可）
+        """
+        import csv
+
+        transactions: list[Transaction] = []
+
+        # Shift-JIS / UTF-8 どちらも試みる
+        for encoding in ("utf-8-sig", "shift_jis", "cp932"):
+            try:
+                with open(filepath, encoding=encoding, newline="") as f:
+                    content = f.read()
+                break
+            except (UnicodeDecodeError, FileNotFoundError):
+                content = None
+
+        if not content:
+            raise ValueError(f"CSV ファイルを読み込めません: {filepath}")
+
+        lines = content.splitlines()
+        reader = csv.reader(lines)
+
+        header_found = False
+        for row in reader:
+            if not row:
+                continue
+            # タイムスタンプ行・ヘッダー行をスキップ
+            if row[0] == "レコード区分":
+                header_found = True
+                continue
+            if not header_found:
+                continue
+            # 明細行のみ処理（合計行等はスキップ）
+            if row[0] != "明細":
+                continue
+            if len(row) < 20:
+                continue
+
+            try:
+                tx_year = int(row[14])
+                tx_month = int(row[15])
+                tx_day = int(row[16])
+                # 対象年月フィルタ
+                if target_year and tx_year != target_year:
+                    continue
+                if target_month and tx_month != target_month:
+                    continue
+
+                amount_str = row[17].replace(",", "").replace("，", "").strip()
+                amount = int(amount_str) if amount_str else 0
+                description = row[19].strip() if len(row) > 19 else ""
+                tx_name = row[13].strip()
+
+                tx_type = (
+                    TransactionType.CREDIT if tx_name == "入金" else TransactionType.DEBIT
+                )
+
+                transactions.append(
+                    Transaction(
+                        date=date(tx_year, tx_month, tx_day),
+                        description=description,
+                        amount=amount,
+                        transaction_type=tx_type,
+                        source="risona:csv",
+                    )
+                )
+            except (ValueError, IndexError):
+                continue  # パース失敗行はスキップ
+
+        return sorted(transactions, key=lambda t: t.date)

@@ -2,10 +2,10 @@
 家計管理アプリ メインエントリポイント
 
 使い方:
-  python -m src.main                    # 当月分を実行
-  python -m src.main --year 2025 --month 4   # 指定月を実行
-  python -m src.main --mock             # モックデータで動作確認
-  python -m src.main --schedule         # 月次自動実行モード
+  python -m src.main --csv sample_data/risona_202604.csv  # CSVから実行（実データ）
+  python -m src.main --mock                               # モックデータで動作確認
+  python -m src.main --year 2026 --month 4                # 指定月を実行
+  python -m src.main --schedule                           # 月次自動実行モード
 """
 
 from __future__ import annotations
@@ -36,57 +36,62 @@ def collect_transactions(
     year: int,
     month: int,
     mock: bool = False,
+    csv_path: str | None = None,
 ) -> list[Transaction]:
     """りそな銀行とクレジットカードから取引データを収集する。"""
     from_date = date(year, month, 1)
     to_date = date(year, month, calendar.monthrange(year, month)[1])
 
     # ----------------------------------------
-    # りそな銀行
+    # りそな銀行（CSV モード優先）
     # ----------------------------------------
-    risona = RisonaClient(
-        client_id=os.getenv("RISONA_CLIENT_ID", ""),
-        client_secret=os.getenv("RISONA_CLIENT_SECRET", ""),
-        mock=mock,
-    )
-
-    if mock:
+    if csv_path:
+        print(f"      CSV から読み込み: {csv_path}")
+        bank_txns = RisonaClient.from_csv(csv_path, target_year=year, target_month=month)
+    elif mock:
+        risona = RisonaClient(client_id="", client_secret="", mock=True)
         risona.authenticate("")
+        accounts = risona.get_accounts()
+        bank_txns = []
+        for account in accounts:
+            bank_txns.extend(risona.get_transactions(account.account_id, from_date, to_date))
     else:
+        risona = RisonaClient(
+            client_id=os.getenv("RISONA_CLIENT_ID", ""),
+            client_secret=os.getenv("RISONA_CLIENT_SECRET", ""),
+        )
         refresh_token = os.getenv("RISONA_REFRESH_TOKEN", "")
         if not refresh_token:
             print("[ERROR] RISONA_REFRESH_TOKEN が設定されていません。")
             sys.exit(1)
         risona.authenticate_with_refresh_token(refresh_token)
-
-    accounts = risona.get_accounts()
-    bank_txns: list[Transaction] = []
-    for account in accounts:
-        bank_txns.extend(
-            risona.get_transactions(account.account_id, from_date, to_date)
-        )
+        accounts = risona.get_accounts()
+        bank_txns = []
+        for account in accounts:
+            bank_txns.extend(risona.get_transactions(account.account_id, from_date, to_date))
 
     # ----------------------------------------
-    # クレジットカード
+    # クレジットカード（CSV モード / mock 時はスキップ）
     # ----------------------------------------
-    cc_provider = os.getenv("CC_PROVIDER", "smbc")
-    cc_client = CreditCardClient(
-        provider=cc_provider,
-        client_id=os.getenv("CC_CLIENT_ID", ""),
-        client_secret=os.getenv("CC_CLIENT_SECRET", ""),
-        mock=mock,
-    )
-
-    if mock:
+    cc_txns: list[Transaction] = []
+    cc_csv = os.getenv("CC_CSV_PATH", "")
+    if cc_csv and os.path.exists(cc_csv):
+        print(f"      クレカ CSV から読み込み: {cc_csv}")
+        cc_txns = CreditCardClient.from_csv(cc_csv)
+    elif mock:
+        cc_client = CreditCardClient(provider="smbc", client_id="", client_secret="", mock=True)
         cc_client.authenticate("")
-    else:
+        cc_txns = cc_client.get_transactions(from_date, to_date)
+    elif os.getenv("CC_CLIENT_ID"):
+        cc_provider = os.getenv("CC_PROVIDER", "smbc")
+        cc_client = CreditCardClient(
+            provider=cc_provider,
+            client_id=os.getenv("CC_CLIENT_ID", ""),
+            client_secret=os.getenv("CC_CLIENT_SECRET", ""),
+        )
         refresh_token = os.getenv("CC_REFRESH_TOKEN", "")
-        if not refresh_token:
-            print("[ERROR] CC_REFRESH_TOKEN が設定されていません。")
-            sys.exit(1)
         cc_client.authenticate_with_refresh_token(refresh_token)
-
-    cc_txns = cc_client.get_transactions(from_date, to_date)
+        cc_txns = cc_client.get_transactions(from_date, to_date)
 
     return bank_txns + cc_txns
 
@@ -131,14 +136,19 @@ def build_goal(cumulative_savings: int = 0) -> SavingsGoal:
     )
 
 
-def run_monthly_report(year: int, month: int, mock: bool = False) -> None:
+def run_monthly_report(
+    year: int,
+    month: int,
+    mock: bool = False,
+    csv_path: str | None = None,
+) -> None:
     print(f"\n{'='*50}")
     print(f"  家計管理レポート生成: {year}年{month:02d}月")
     print(f"{'='*50}")
 
     # 1. データ収集
     print("\n[1/4] 取引データを取得中...")
-    transactions = collect_transactions(year, month, mock=mock)
+    transactions = collect_transactions(year, month, mock=mock, csv_path=csv_path)
     print(f"      → {len(transactions)} 件取得")
 
     # 2. サマリー生成
@@ -182,10 +192,21 @@ def run_monthly_report(year: int, month: int, mock: bool = False) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="家計管理アプリ")
-    parser.add_argument("--year", type=int, default=None, help="対象年 (デフォルト: 当年)")
-    parser.add_argument("--month", type=int, default=None, help="対象月 (デフォルト: 当月)")
+    parser = argparse.ArgumentParser(
+        description="家計管理アプリ",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使い方の例:
+  python -m src.main --csv sample_data/risona_202604.csv --year 2026 --month 4
+  python -m src.main --mock
+  python -m src.main --schedule
+        """,
+    )
+    parser.add_argument("--year", type=int, default=None, help="対象年")
+    parser.add_argument("--month", type=int, default=None, help="対象月")
     parser.add_argument("--mock", action="store_true", help="モックデータで実行")
+    parser.add_argument("--csv", type=str, default=None, metavar="FILE",
+                        help="りそな銀行 CSV ファイルのパス")
     parser.add_argument("--schedule", action="store_true", help="月次自動実行モード")
     args = parser.parse_args()
 
@@ -198,7 +219,6 @@ def main() -> None:
 
         def scheduled_job():
             t = date.today()
-            # 前月分を生成（月初に前月レポートを作成）
             if t.month == 1:
                 run_monthly_report(t.year - 1, 12, mock=args.mock)
             else:
@@ -210,7 +230,7 @@ def main() -> None:
             schedule.run_pending()
             time.sleep(60)
     else:
-        run_monthly_report(year, month, mock=args.mock)
+        run_monthly_report(year, month, mock=args.mock, csv_path=args.csv)
 
 
 if __name__ == "__main__":
