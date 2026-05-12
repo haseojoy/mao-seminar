@@ -1,41 +1,29 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::Serverless-2016-10-31
 Description: >
   Health Event Dedup System
-  EventBridge(aws.health ECS) → SNS → Slack
-  API Gateway(POST /check) → Lambda dedup_checker → DynamoDB
+  EventBridge(aws.health ECS) -> SNS -> Lambda(Slack通知)
+  API Gateway(POST /check) -> Lambda(dedup_checker) -> DynamoDB(HealthEvents)
 
-# ─────────────────────────────────────────
+# =========================================================
 # Parameters
-# ─────────────────────────────────────────
+# =========================================================
 Parameters:
   SlackWebhookUrl:
     Type: String
     NoEcho: true
-    Description: Slack Incoming Webhook URL (ai-soloprenor channel)
+    Description: >
+      Slack Incoming Webhook URL（ai-soloprenor チャンネル用）
+      例: https://hooks.slack.com/services/T.../B.../xxx
 
-  ApiKeySuffix:
-    Type: String
-    Default: "health-dedup"
-    Description: Suffix appended to the generated API Key name
-
-# ─────────────────────────────────────────
-# Globals
-# ─────────────────────────────────────────
-Globals:
-  Function:
-    Runtime: python3.12
-    Timeout: 30
-    MemorySize: 256
-    Architectures:
-      - arm64
-
-# ─────────────────────────────────────────
+# =========================================================
 # Resources
-# ─────────────────────────────────────────
+# =========================================================
 Resources:
 
-  # ── DynamoDB ──────────────────────────
+  # -------------------------------------------------------
+  # DynamoDB: HealthEvents
+  #   event_key (ハッシュキー) で一意管理、TTL 60日で自動失効
+  # -------------------------------------------------------
   HealthEventsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -50,25 +38,26 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
 
-  # ── Secrets Manager ───────────────────
+  # -------------------------------------------------------
+  # Secrets Manager: Slack Incoming Webhook URL
+  # -------------------------------------------------------
   SlackWebhookSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: /health-event-dedup/slack-webhook-url
-      Description: Slack Incoming Webhook URL for ai-soloprenor channel
+      Description: Slack Incoming Webhook URL（ai-soloprenor チャンネル）
       SecretString: !Sub '{"webhook_url":"${SlackWebhookUrl}"}'
 
-  # ── SNS Topic ─────────────────────────
+  # -------------------------------------------------------
+  # SNS Topic
+  # -------------------------------------------------------
   HealthEventsTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: health-events-ecs
-      DisplayName: AWS Health ECS Events
 
-  # EventBridge が SNS に Publish できるようにするポリシー
+  # EventBridge が SNS に Publish できるポリシー
   HealthEventsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -83,13 +72,16 @@ Resources:
             Action: sns:Publish
             Resource: !Ref HealthEventsTopic
 
-  # ── EventBridge Rule ──────────────────
+  # -------------------------------------------------------
+  # EventBridge Rule: aws.health の ECS イベントのみフィルタ
+  #   ※ AWS Health イベントは必ず us-east-1 で発生する
+  #     このスタックは us-east-1 にデプロイすること
+  # -------------------------------------------------------
   HealthEcsEventRule:
     Type: AWS::Events::Rule
     Properties:
       Name: aws-health-ecs-events
-      Description: Capture AWS Health events for ECS and forward to SNS
-      # AWS Health イベントは us-east-1 のグローバルエンドポイントで発生する
+      Description: AWS Health ECS イベントを SNS へ転送する
       EventPattern:
         source:
           - aws.health
@@ -103,77 +95,284 @@ Resources:
         - Arn: !Ref HealthEventsTopic
           Id: HealthEventsSNSTarget
 
-  # ── Lambda: slack_notifier ─────────────
+  # -------------------------------------------------------
+  # IAM Role: slack_notifier Lambda 用
+  # -------------------------------------------------------
+  SlackNotifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: health-event-slack-notifier-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadSlackSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SlackWebhookSecret
+
+  # -------------------------------------------------------
+  # Lambda: slack_notifier
+  #   SNS メッセージを受け取り Slack へ投稿する
+  # -------------------------------------------------------
   SlackNotifierFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Lambda::Function
     Properties:
       FunctionName: health-event-slack-notifier
-      CodeUri: lambda/slack_notifier/
+      Runtime: python3.12
       Handler: index.lambda_handler
-      Description: SNS から受け取った AWS Health ECS イベントを Slack に通知する
+      Role: !GetAtt SlackNotifierRole.Arn
+      Timeout: 30
       Environment:
         Variables:
           SLACK_SECRET_ARN: !Ref SlackWebhookSecret
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action: secretsmanager:GetSecretValue
-              Resource: !Ref SlackWebhookSecret
-      Events:
-        SNSTrigger:
-          Type: SNS
-          Properties:
-            Topic: !Ref HealthEventsTopic
+      Code:
+        ZipFile: |
+          import json, os, urllib.request
+          from datetime import datetime, timezone
+          import boto3
+          sc = boto3.client('secretsmanager')
+          _cache = None
+          def lambda_handler(event, context):
+            global _cache
+            if not _cache:
+              _cache = json.loads(sc.get_secret_value(SecretId=os.environ['SLACK_SECRET_ARN'])['SecretString'])['webhook_url']
+            for rec in event.get('Records', []):
+              try:
+                he = json.loads(rec.get('Sns', {}).get('Message', '{}'))
+              except Exception:
+                he = {}
+              _post(_cache, he)
+            return {'statusCode': 200}
+          def _post(url, he):
+            d = he.get('detail', {})
+            descs = d.get('eventDescription', [{}])
+            desc = descs[0].get('latestDescription', '（詳細なし）') if isinstance(descs, list) and descs else '（詳細なし）'
+            cat = d.get('eventTypeCategory', 'N/A')
+            colors = {'issue': 'danger', 'scheduledChange': 'warning', 'accountNotification': '#439FE0'}
+            payload = {
+              'text': ':rotating_light: *AWS Health ECS イベント検出*',
+              'attachments': [{'color': colors.get(cat, '#ccc'), 'fields': [
+                {'title': 'イベント種別', 'value': d.get('eventTypeCode', 'N/A'), 'short': True},
+                {'title': 'カテゴリ', 'value': cat, 'short': True},
+                {'title': 'リージョン', 'value': he.get('region', 'N/A'), 'short': True},
+                {'title': '開始時刻', 'value': d.get('startTime', 'N/A'), 'short': True},
+                {'title': '説明', 'value': desc, 'short': False},
+                {'title': 'Event ARN', 'value': '`' + d.get('eventArn', 'N/A') + '`', 'short': False},
+              ], 'footer': 'AWS Health | ' + datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]
+            }
+            req = urllib.request.Request(url, json.dumps(payload).encode(), {'Content-Type': 'application/json'}, method='POST')
+            urllib.request.urlopen(req, timeout=10)
 
-  # ── API Gateway ───────────────────────
-  HealthDedupApi:
-    Type: AWS::Serverless::Api
+  # SNS が slack_notifier Lambda を呼び出す権限
+  SlackNotifierSNSPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      Name: health-event-dedup-api
-      StageName: v1
-      Description: POST /check — イベント重複チェック API (API Key 認証)
-      Auth:
-        ApiKeyRequired: true
-        UsagePlan:
-          CreateUsagePlan: PER_API
-          UsagePlanName: !Sub "health-dedup-usage-plan-${ApiKeySuffix}"
-          Quota:
-            Limit: 1000
-            Period: DAY
-          Throttle:
-            BurstLimit: 20
-            RateLimit: 10
+      FunctionName: !GetAtt SlackNotifierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref HealthEventsTopic
 
-  # ── Lambda: dedup_checker ─────────────
+  # SNS → Lambda サブスクリプション
+  SlackNotifierSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref HealthEventsTopic
+      Protocol: lambda
+      Endpoint: !GetAtt SlackNotifierFunction.Arn
+
+  # -------------------------------------------------------
+  # IAM Role: dedup_checker Lambda 用
+  # -------------------------------------------------------
+  DedupCheckerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: health-event-dedup-checker-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt HealthEventsTable.Arn
+
+  # -------------------------------------------------------
+  # Lambda: dedup_checker
+  #   API 経由で渡された Health イベントが既知か初か判定し
+  #   起票用 JSON を返す
+  # -------------------------------------------------------
   DedupCheckerFunction:
-    Type: AWS::Serverless::Function
+    Type: AWS::Lambda::Function
     Properties:
       FunctionName: health-event-dedup-checker
-      CodeUri: lambda/dedup_checker/
+      Runtime: python3.12
       Handler: index.lambda_handler
-      Description: >
-        POST /check — DynamoDB を参照してイベントが既知か初か判定し、起票用 JSON を返す
+      Role: !GetAtt DedupCheckerRole.Arn
+      Timeout: 30
       Environment:
         Variables:
           TABLE_NAME: !Ref HealthEventsTable
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref HealthEventsTable
-      Events:
-        CheckEvent:
-          Type: Api
-          Properties:
-            RestApiId: !Ref HealthDedupApi
-            Path: /check
-            Method: POST
+      Code:
+        ZipFile: |
+          import json, os, hashlib
+          from datetime import datetime, timedelta, timezone
+          import boto3
+          ddb = boto3.resource('dynamodb')
+          TABLE = os.environ['TABLE_NAME']
+          def lambda_handler(event, context):
+            try:
+              body = json.loads(event.get('body') or '{}')
+            except Exception:
+              return resp(400, {'error': 'Invalid JSON'})
+            if not body:
+              return resp(400, {'error': 'Empty body'})
+            d = body.get('detail', {})
+            key = d.get('eventArn') or body.get('event_key') or hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+            table = ddb.Table(TABLE)
+            item = table.get_item(Key={'event_key': key}).get('Item')
+            if item:
+              return resp(200, {'is_new': False, 'event_key': key, 'message': 'duplicate', 'first_seen': item['first_seen']})
+            now = datetime.now(timezone.utc)
+            ttl = int((now + timedelta(days=60)).timestamp())
+            table.put_item(Item={'event_key': key, 'first_seen': now.isoformat(), 'event_data': json.dumps(body), 'ttl': ttl})
+            descs = d.get('eventDescription', [{}])
+            desc = descs[0].get('latestDescription', '') if isinstance(descs, list) and descs else ''
+            return resp(200, {'is_new': True, 'event_key': key, 'message': 'new event - create ticket', 'ticket_data': {
+              'title': desc or d.get('eventTypeCode', 'AWS Health ECS Event'),
+              'severity': d.get('eventTypeCategory', 'unknown'),
+              'region': body.get('region', 'unknown'),
+              'service': d.get('service', 'ECS'),
+              'event_arn': d.get('eventArn', key),
+              'start_time': d.get('startTime', now.isoformat()),
+              'description': desc,
+              'raw': body
+            }})
+          def resp(s, p):
+            return {'statusCode': s, 'headers': {'Content-Type': 'application/json'}, 'body': json.dumps(p, ensure_ascii=False)}
 
-# ─────────────────────────────────────────
+  # -------------------------------------------------------
+  # API Gateway: REST API
+  # -------------------------------------------------------
+  HealthDedupApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: health-event-dedup-api
+      Description: POST /check — イベント重複チェック API (API Key 認証)
+
+  CheckResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref HealthDedupApi
+      ParentId: !GetAtt HealthDedupApi.RootResourceId
+      PathPart: check
+
+  CheckMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HealthDedupApi
+      ResourceId: !Ref CheckResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FnArn}/invocations"
+          - FnArn: !GetAtt DedupCheckerFunction.Arn
+
+  # デプロイメント（CheckMethod が作成されてから実行）
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: CheckMethod
+    Properties:
+      RestApiId: !Ref HealthDedupApi
+
+  # ステージ: v1
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref HealthDedupApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: v1
+
+  # API Gateway が dedup_checker Lambda を呼び出す権限
+  DedupCheckerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DedupCheckerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HealthDedupApi}/*/POST/check"
+
+  # API Key
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: ApiStage
+    Properties:
+      Name: health-event-dedup-api-key
+      Description: health-event-dedup POST /check 用 API Key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref HealthDedupApi
+          StageName: v1
+
+  # Usage Plan（レート制限・クォータ）
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: ApiStage
+    Properties:
+      UsagePlanName: health-event-dedup-usage-plan
+      ApiStages:
+        - ApiId: !Ref HealthDedupApi
+          Stage: v1
+      Throttle:
+        BurstLimit: 20
+        RateLimit: 10
+      Quota:
+        Limit: 1000
+        Period: DAY
+
+  # API Key と Usage Plan を紐付け
+  ApiUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
+
+# =========================================================
 # Outputs
-# ─────────────────────────────────────────
+# =========================================================
 Outputs:
   ApiEndpoint:
     Description: "POST /check エンドポイント URL"
     Value: !Sub "https://${HealthDedupApi}.execute-api.${AWS::Region}.amazonaws.com/v1/check"
+
+  ApiKeyId:
+    Description: "API Key の ID（コンソールで値を確認してください）"
+    Value: !Ref ApiKey
 
   DynamoDBTableName:
     Description: "DynamoDB テーブル名"
@@ -184,13 +383,5 @@ Outputs:
     Value: !Ref HealthEventsTopic
 
   SlackSecretArn:
-    Description: "Secrets Manager — Slack Webhook URL の ARN"
+    Description: "Secrets Manager ARN（Slack Webhook URL）"
     Value: !Ref SlackWebhookSecret
-
-  SlackNotifierFunctionArn:
-    Description: "Slack 通知 Lambda ARN"
-    Value: !GetAtt SlackNotifierFunction.Arn
-
-  DedupCheckerFunctionArn:
-    Description: "重複チェック Lambda ARN"
-    Value: !GetAtt DedupCheckerFunction.Arn
