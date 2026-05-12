@@ -270,21 +270,31 @@ Resources:
             table = ddb.Table(TABLE)
             item = table.get_item(Key={'event_key': key}).get('Item')
             if item:
-              return resp(200, {'is_new': False, 'event_key': key, 'message': 'duplicate', 'first_seen': item['first_seen']})
+              return resp(200, {'is_new': False, 'event_key': key, 'message': '既知のイベントです。報告は不要です。', 'first_seen': item['first_seen']})
             now = datetime.now(timezone.utc)
             ttl = int((now + timedelta(days=60)).timestamp())
             table.put_item(Item={'event_key': key, 'first_seen': now.isoformat(), 'event_data': json.dumps(body), 'ttl': ttl})
             descs = d.get('eventDescription', [{}])
             desc = descs[0].get('latestDescription', '') if isinstance(descs, list) and descs else ''
-            return resp(200, {'is_new': True, 'event_key': key, 'message': 'new event - create ticket', 'ticket_data': {
-              'title': desc or d.get('eventTypeCode', 'AWS Health ECS Event'),
-              'severity': d.get('eventTypeCategory', 'unknown'),
-              'region': body.get('region', 'unknown'),
-              'service': d.get('service', 'ECS'),
-              'event_arn': d.get('eventArn', key),
-              'start_time': d.get('startTime', now.isoformat()),
-              'description': desc,
-              'raw': body
+            title = desc.split('\n')[0][:100] if desc else d.get('eventTypeCode', 'AWS Health ECS Event')
+            region = body.get('region', 'N/A')
+            cat = d.get('eventTypeCategory', 'unknown')
+            etype = d.get('eventTypeCode', 'N/A')
+            arn = d.get('eventArn', key)
+            start = d.get('startTime', now.isoformat())
+            impact = {'issue': '1', 'scheduledChange': '2', 'accountNotification': '3'}.get(cat, '2')
+            urgency = {'issue': '2', 'scheduledChange': '3', 'accountNotification': '3'}.get(cat, '3')
+            sn_desc = '\n'.join([f'■ イベント種別 : {etype}', f'■ カテゴリ     : {cat}', f'■ リージョン   : {region}', f'■ 開始時刻     : {start}', f'■ Event ARN    : {arn}', '', '■ 詳細:', desc or '（詳細なし）'])
+            return resp(200, {'is_new': True, 'event_key': key, 'message': '新規イベントです。起票をお願いします。', 'ticket_data': {
+              'title': title, 'severity': cat, 'region': region, 'service': d.get('service', 'ECS'),
+              'event_arn': arn, 'start_time': start, 'description': desc, 'raw': body
+            }, 'servicenow': {
+              'short_description': f'[AWS Health ECS] {title} ({region})',
+              'description': sn_desc,
+              'category': 'Infrastructure',
+              'impact': impact,
+              'urgency': urgency,
+              'assignment_group': 'AWS Operations'
             }})
           def resp(s, p):
             return {'statusCode': s, 'headers': {'Content-Type': 'application/json'}, 'body': json.dumps(p, ensure_ascii=False)}
