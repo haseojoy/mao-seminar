@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Health Event Dedup System
-  EventBridge(aws.health ECS) -> SNS -> Lambda(Slack通知)
+  Health Event Dedup System — メインスタック (ap-northeast-1 / 東京)
+  us-east-1 から転送された aws.health ECS イベントを受信し Slack 通知。
   API Gateway(POST /check) -> Lambda(dedup_checker) -> DynamoDB(HealthEvents)
+  ※ デプロイ後に Outputs の CustomEventBusArn を template-us-east-1.yaml に入力してください。
 
 # =========================================================
 # Parameters
@@ -50,6 +51,24 @@ Resources:
       SecretString: !Sub '{"webhook_url":"${SlackWebhookUrl}"}'
 
   # -------------------------------------------------------
+  # EventBridge カスタムイベントバス
+  #   us-east-1 の転送ルールからイベントを受け取る専用バス
+  # -------------------------------------------------------
+  HealthEventsCustomBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: health-events-from-us-east-1
+
+  # 同一アカウントの us-east-1 EventBridge が PutEvents できるポリシー
+  HealthEventsCustomBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      EventBusName: !Ref HealthEventsCustomBus
+      StatementId: AllowSameAccountCrossRegionForward
+      Action: events:PutEvents
+      Principal: !Sub "${AWS::AccountId}"
+
+  # -------------------------------------------------------
   # SNS Topic
   # -------------------------------------------------------
   HealthEventsTopic:
@@ -73,15 +92,14 @@ Resources:
             Resource: !Ref HealthEventsTopic
 
   # -------------------------------------------------------
-  # EventBridge Rule: aws.health の ECS イベントのみフィルタ
-  #   ※ AWS Health イベントは必ず us-east-1 で発生する
-  #     このスタックは us-east-1 にデプロイすること
+  # EventBridge Rule: カスタムバス上の ECS イベント → SNS
   # -------------------------------------------------------
-  HealthEcsEventRule:
+  HealthEcsLocalRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: aws-health-ecs-events
-      Description: AWS Health ECS イベントを SNS へ転送する
+      Name: aws-health-ecs-to-sns
+      Description: カスタムバスの ECS イベントを SNS へ転送する
+      EventBusName: !Ref HealthEventsCustomBus
       EventPattern:
         source:
           - aws.health
@@ -302,14 +320,12 @@ Resources:
           - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FnArn}/invocations"
           - FnArn: !GetAtt DedupCheckerFunction.Arn
 
-  # デプロイメント（CheckMethod が作成されてから実行）
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn: CheckMethod
     Properties:
       RestApiId: !Ref HealthDedupApi
 
-  # ステージ: v1
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
@@ -317,7 +333,6 @@ Resources:
       DeploymentId: !Ref ApiDeployment
       StageName: v1
 
-  # API Gateway が dedup_checker Lambda を呼び出す権限
   DedupCheckerApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -326,7 +341,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HealthDedupApi}/*/POST/check"
 
-  # API Key
   ApiKey:
     Type: AWS::ApiGateway::ApiKey
     DependsOn: ApiStage
@@ -338,7 +352,6 @@ Resources:
         - RestApiId: !Ref HealthDedupApi
           StageName: v1
 
-  # Usage Plan（レート制限・クォータ）
   ApiUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
     DependsOn: ApiStage
@@ -354,7 +367,6 @@ Resources:
         Limit: 1000
         Period: DAY
 
-  # API Key と Usage Plan を紐付け
   ApiUsagePlanKey:
     Type: AWS::ApiGateway::UsagePlanKey
     Properties:
@@ -366,12 +378,16 @@ Resources:
 # Outputs
 # =========================================================
 Outputs:
+  CustomEventBusArn:
+    Description: "【重要】template-us-east-1.yaml の TargetEventBusArn パラメータに貼り付ける値"
+    Value: !GetAtt HealthEventsCustomBus.Arn
+
   ApiEndpoint:
     Description: "POST /check エンドポイント URL"
     Value: !Sub "https://${HealthDedupApi}.execute-api.${AWS::Region}.amazonaws.com/v1/check"
 
   ApiKeyId:
-    Description: "API Key の ID（コンソールで値を確認してください）"
+    Description: "API Key の ID（コンソール → API Gateway → API キー → 値を表示）"
     Value: !Ref ApiKey
 
   DynamoDBTableName:
