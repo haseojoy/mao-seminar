@@ -410,9 +410,28 @@ async def main_async(target_stores: Optional[list[str]], dry_run: bool) -> None:
 
     results = []
 
+    # Resolve executable path: prefer env var, then scan known locations
+    import glob as _glob
+    _exec_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH") or None
+    if not _exec_path:
+        _candidates = sorted(_glob.glob(
+            "/opt/pw-browsers/chromium*/chrome-linux/chrome"
+        ) + _glob.glob(
+            "/opt/pw-browsers/chromium_headless_shell*/chrome-linux/headless_shell"
+        ) + _glob.glob(
+            os.path.expanduser("~/.cache/ms-playwright/chromium*/chrome-linux/chrome")
+        ), reverse=True)
+        _exec_path = _candidates[0] if _candidates else None
+    if _exec_path:
+        print(f"  [browser] executable: {_exec_path}")
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        launch_opts: dict = {"headless": True}
+        if _exec_path:
+            launch_opts["executable_path"] = _exec_path
+        browser = await pw.chromium.launch(**launch_opts)
         context = await browser.new_context(
+            ignore_https_errors=True,
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
