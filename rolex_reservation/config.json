@@ -11,28 +11,29 @@
   "stores": {
     "shinjuku": {
       "enabled": true,
-      "url": "https://x.gd/A2wq8",
+      "url": "https://reservation.rolexboutique-lexia.jp/shinjuku/reservation",
       "name": "新宿"
     },
     "ginza": {
-      "enabled": true,
-      "url": "https://x.gd/w5inx",
-      "name": "銀座"
+      "enabled": false,
+      "url": "",
+      "name": "銀座",
+      "_note": "URLが不明のため無効化中"
     },
     "omotesando": {
       "enabled": true,
-      "url": "https://x.gd/oiqnT",
+      "url": "https://reservation.rolexboutique-omotesando-tokyo.jp/omotesando/reservation/distinction/select",
       "name": "表参道",
       "select_visit_reservation": true
     },
     "osaka_hilton": {
       "enabled": true,
-      "url": "https://x.gd/FBaW3",
+      "url": "https://reservation.rolexboutique-hiltonplaza-osaka.jp/osaka-umeda/reservation",
       "name": "大阪ヒルトン"
     },
     "nagoya": {
       "enabled": true,
-      "url": "https://x.gd/O9nP4",
+      "url": "https://reservation.rolexboutique-lexia.jp/nagoya-sakae/reservation",
       "name": "レキシア名古屋"
     }
   }
