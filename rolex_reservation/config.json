@@ -1,0 +1,39 @@
+{
+  "personal_info": {
+    "last_name": "山田",
+    "first_name": "太郎",
+    "last_name_kana": "ヤマダ",
+    "first_name_kana": "タロウ",
+    "email": "taro.yamada@example.com",
+    "phone": "09012345678",
+    "gender": "male"
+  },
+  "stores": {
+    "shinjuku": {
+      "enabled": true,
+      "url": "https://x.gd/A2wq8",
+      "name": "新宿"
+    },
+    "ginza": {
+      "enabled": true,
+      "url": "https://x.gd/w5inx",
+      "name": "銀座"
+    },
+    "omotesando": {
+      "enabled": true,
+      "url": "https://x.gd/oiqnT",
+      "name": "表参道",
+      "select_visit_reservation": true
+    },
+    "osaka_hilton": {
+      "enabled": true,
+      "url": "https://x.gd/FBaW3",
+      "name": "大阪ヒルトン"
+    },
+    "nagoya": {
+      "enabled": true,
+      "url": "https://x.gd/O9nP4",
+      "name": "レキシア名古屋"
+    }
+  }
+}
