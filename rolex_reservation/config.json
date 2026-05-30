@@ -15,10 +15,9 @@
       "name": "新宿"
     },
     "ginza": {
-      "enabled": false,
-      "url": "",
-      "name": "銀座",
-      "_note": "URLが不明のため無効化中"
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-lexia.jp/ginza/reservation",
+      "name": "銀座"
     },
     "omotesando": {
       "enabled": true,
