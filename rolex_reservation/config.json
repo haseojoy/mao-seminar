@@ -1,0 +1,39 @@
+{
+  "personal_info": {
+    "last_name": "山田",
+    "first_name": "太郎",
+    "last_name_kana": "ヤマダ",
+    "first_name_kana": "タロウ",
+    "email": "taro.yamada@example.com",
+    "phone": "09012345678",
+    "gender": "male"
+  },
+  "stores": {
+    "shinjuku": {
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-lexia.jp/shinjuku/reservation",
+      "name": "新宿"
+    },
+    "ginza": {
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-lexia.jp/ginza/reservation",
+      "name": "銀座"
+    },
+    "omotesando": {
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-omotesando-tokyo.jp/omotesando/reservation/distinction/select",
+      "name": "表参道",
+      "select_visit_reservation": true
+    },
+    "osaka_hilton": {
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-hiltonplaza-osaka.jp/osaka-umeda/reservation",
+      "name": "大阪ヒルトン"
+    },
+    "nagoya": {
+      "enabled": true,
+      "url": "https://reservation.rolexboutique-lexia.jp/nagoya-sakae/reservation",
+      "name": "レキシア名古屋"
+    }
+  }
+}
