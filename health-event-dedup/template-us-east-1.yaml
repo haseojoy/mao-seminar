@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Event Dedup System — 転送ルールのみ (us-east-1 / バージニア北部)
+  AWS Health ECS イベントを ap-northeast-1 のカスタムイベントバスへ転送する。
+  ※ template-ap-northeast-1.yaml を先にデプロイし、
+    Outputs の CustomEventBusArn をパラメータに入力してください。
+
+# =========================================================
+# Parameters
+# =========================================================
+Parameters:
+  TargetEventBusArn:
+    Type: String
+    Description: >
+      ap-northeast-1 スタック (template-ap-northeast-1.yaml) の
+      Outputs > CustomEventBusArn の値を貼り付けてください。
+      例: arn:aws:events:ap-northeast-1:123456789012:event-bus/health-events-from-us-east-1
+
+# =========================================================
+# Resources
+# =========================================================
+Resources:
+
+  # -------------------------------------------------------
+  # IAM Role: EventBridge が ap-northeast-1 のバスに PutEvents するためのロール
+  # -------------------------------------------------------
+  ForwardToTokyoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: health-event-forward-to-tokyo-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PutEventsToTokyo
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Ref TargetEventBusArn
+
+  # -------------------------------------------------------
+  # EventBridge Rule: aws.health ECS イベント → 東京バスへ転送
+  # -------------------------------------------------------
+  HealthEcsForwardRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: aws-health-ecs-forward-to-tokyo
+      Description: AWS Health ECS イベントを ap-northeast-1 カスタムバスへ転送する
+      EventPattern:
+        source:
+          - aws.health
+        detail-type:
+          - AWS Health Event
+        detail:
+          service:
+            - ECS
+      State: ENABLED
+      Targets:
+        - Arn: !Ref TargetEventBusArn
+          Id: ForwardToTokyo
+          RoleArn: !GetAtt ForwardToTokyoRole.Arn
+
+# =========================================================
+# Outputs
+# =========================================================
+Outputs:
+  ForwardRuleArn:
+    Description: "転送ルール ARN"
+    Value: !GetAtt HealthEcsForwardRule.Arn
